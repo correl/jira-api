@@ -58,11 +58,14 @@
   :group 'jira-api
   :type 'string)
 
-(defvar jira-api-agile-sprint-field 'customfield_10300
+(defvar jira-api-agile-sprint-field 'customfield_10007
   "JIRA Agile sprint field")
 
-(defvar jira-api-agile-story-points-field 'customfield_10003
+(defvar jira-api-agile-story-points-field 'customfield_10004
   "JIRA Agile story points field")
+
+(defvar jira-api-agile-definition-of-done-field 'customfield_11300
+  "JIRA Agile Definition of Done field")
 
 (defconst jira-api-timetracking-units
   '(("m" . 60)                          ; 60 minutes in an hour
@@ -195,5 +198,50 @@
            "/worklog")
    `((timeSpentSeconds . ,seconds))))
 
-(provide 'org-jira-rest)
+(defun jira-api-get-project-issue-types (project-key)
+  (let* ((metadata (jira-api-get
+                    (s-concat "/rest/api/latest/issue/createmeta?projectKeys="
+                              project-key
+                              "&expand=projects.issuetypes.fields")))
+       (projects (jira-api-get-attribute metadata 'projects))
+       (issuetypes
+        (-map (lambda (p)
+                (cons (jira-api-get-attribute p 'key)
+                      (-map (lambda (issuetype)
+                              (let ((fields (jira-api-get-attribute issuetype 'fields)))
+                                (cons (jira-api-get-attribute issuetype 'name)
+                                      (-map (lambda (field) (cons (jira-api-get-attribute field 'name)
+                                                                  (car field))) fields)
+                                      )))
+                            (jira-api-get-attribute p 'issuetypes))))
+              projects)))
+    (jira-api-get-attribute issuetypes project-key)))
+
+(defun jira-api-create-issue-from-heading ()
+  (interactive)
+  (let ((title (org-get-heading t t t t))
+        (todo (org-entry-get (point) "TODO"))
+        (issue (org-entry-get (point) "JIRA_ID"))
+        (epic (org-entry-get (point) "JIRA_EPIC" t))
+        (component (org-entry-get (point) "COMPONENT" t))
+        (content (let ((org-export-with-drawers nil)
+                       (org-export-with-properties nil))
+                   (org-export-as 'jira t nil t (list :with-drawers nil)))))
+    (when issue
+      (error "Jira issue is already set"))
+    (unless todo
+      (error "Must be a TODO"))
+    (let* ((request `((fields . ((project . ((key . "CCPANEL")))
+                                 (summary . ,title)
+                                 (description . ,content)
+                                 (issuetype . ((name . "Task")))
+                                 (components . (((name . ,component))))
+                                 (customfield_10008 . ,epic)))))
+           (response (jira-api-post "/rest/api/latest/issue"
+                                   request))
+           (issue (jira-api-get-attribute response 'key)))
+      (if issue (org-set-property "JIRA_ID" issue)
+        (error "Something's gone horribly wrong: %s" response)))))
+
+(provide 'jira-api)
 ;;; jira-api.el ends here
